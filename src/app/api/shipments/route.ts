@@ -19,7 +19,6 @@ export async function GET() {
     const data = await listShipmentsForDriver(user.email);
     return NextResponse.json({ data, count: data.length });
   }
-
   const data = await listShipments();
   return NextResponse.json({ data, count: data.length });
 }
