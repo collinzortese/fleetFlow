@@ -1,10 +1,13 @@
 import { redirect } from "next/navigation";
 import { auth } from "../../../auth";
 import { DeliveryNoteForm } from "@/components/delivery-note-form";
+import { DeliveryProofUpload } from "@/components/delivery-proof-upload";
+import { AssignmentResponseActions } from "@/components/assignment-response-actions";
+import { DriverAvailabilityControl } from "@/components/driver-availability-control";
 import { Sidebar } from "@/components/sidebar";
 import { StatusActions } from "@/components/status-actions";
 import { StatusBadge } from "@/components/status-badge";
-import { listShipmentsForDriver } from "@/lib/data";
+import { listShipmentsForDriver, listDrivers } from "@/lib/data";
 
 export const dynamic = "force-dynamic";
 
@@ -13,7 +16,8 @@ export default async function DriverPage() {
   const email = session?.user?.email;
   if (!email) redirect("/login?error=driver");
 
-  const assigned = await listShipmentsForDriver(email);
+  const [assigned, drivers] = await Promise.all([listShipmentsForDriver(email), listDrivers()]);
+  const driver = drivers.find((item) => item.email.toLowerCase() === email.toLowerCase());
   const name = session.user.name ?? "Driver";
   const firstName = name.split(/\s+/)[0] || "Driver";
   const activeTrips = assigned.filter((shipment) => shipment.status !== "DELIVERED").length;
@@ -36,7 +40,13 @@ export default async function DriverPage() {
                 <div className="driver-hero-eyebrow">Driver workspace</div>
                 <p>Signed in as {name}</p>
               </div>
-              <span className="status-badge status-delivered">On duty</span>
+              <span className={`status-badge ${driver?.availability === "UNAVAILABLE" ? "status-pending" : "status-delivered"}`}>
+                {driver?.availability === "UNAVAILABLE" ? "Unavailable" : "Available"}
+              </span>
+            </div>
+            <div className="driver-availability-setting">
+              <span><strong>Availability</strong><small>Let dispatch know whether you can take assignments.</small></span>
+              <DriverAvailabilityControl current={driver?.availability ?? "AVAILABLE"} />
             </div>
             <div className="driver-hero-copy">
               <div>
@@ -91,10 +101,21 @@ export default async function DriverPage() {
 
                   <p className="driver-trip-note">{shipment.notes ?? "No delivery notes yet."}</p>
 
-                  <div className="driver-trip-actions">
-                    <StatusActions trackingCode={shipment.trackingCode} current={shipment.status} />
-                    <DeliveryNoteForm trackingCode={shipment.trackingCode} />
-                  </div>
+                  {shipment.assignmentStatus === "PENDING" ? (
+                    <div className="driver-assignment-pending">
+                      <div>
+                        <strong>New assignment</strong>
+                        <p>Review the route and choose whether you can take it.</p>
+                      </div>
+                      <AssignmentResponseActions trackingCode={shipment.trackingCode} />
+                    </div>
+                  ) : (
+                    <div className="driver-trip-actions">
+                      <StatusActions trackingCode={shipment.trackingCode} current={shipment.status} />
+                      <DeliveryNoteForm trackingCode={shipment.trackingCode} />
+                      <DeliveryProofUpload trackingCode={shipment.trackingCode} proofs={shipment.deliveryProofs} />
+                    </div>
+                  )}
                 </article>
               ))}
 

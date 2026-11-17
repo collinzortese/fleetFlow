@@ -45,6 +45,9 @@ export default async function ShipmentsPage() {
                   </td>
                   <td>
                     <div>{shipment.driverName ?? "Unassigned"}</div>
+                    {shipment.driverId && shipment.assignmentStatus === "PENDING" ? (
+                      <small className="assignment-status">Awaiting response</small>
+                    ) : null}
                     <DriverAssignment
                       trackingCode={shipment.trackingCode}
                       currentDriverId={shipment.driverId}

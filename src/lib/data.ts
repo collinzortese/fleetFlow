@@ -1,4 +1,4 @@
-import { Prisma, type ShipmentStatus } from "@prisma/client";
+import { Prisma, type AssignmentStatus, type DriverAvailability, type ShipmentStatus } from "@prisma/client";
 import { randomUUID } from "node:crypto";
 import { assertTransition } from "./shipment-rules";
 import { prisma } from "./prisma";
@@ -7,6 +7,10 @@ import type { Shipment, ShipmentEvent } from "./types";
 const shipmentInclude = {
   driver: { select: { id: true, name: true, email: true } },
   customer: { select: { name: true } },
+  deliveryProofs: {
+    orderBy: { createdAt: "desc" },
+    select: { id: true, originalName: true, contentType: true, sizeBytes: true, createdAt: true },
+  },
 } satisfies Prisma.ShipmentInclude;
 
 type ShipmentRecord = Prisma.ShipmentGetPayload<{
@@ -36,6 +40,14 @@ function toShipment(record: ShipmentRecord): Shipment {
     origin: record.origin,
     destination: record.destination,
     status: record.status,
+    assignmentStatus: record.assignmentStatus,
+    deliveryProofs: record.deliveryProofs.map((proof) => ({
+      id: proof.id,
+      originalName: proof.originalName,
+      contentType: proof.contentType,
+      sizeBytes: proof.sizeBytes,
+      uploadedAt: proof.createdAt.toISOString(),
+    })),
     driverId: record.driverId,
     driverName: record.driver?.name ?? null,
     customerName: record.customer.name,
@@ -50,6 +62,50 @@ export type ShipmentFormOptions = {
   drivers: Array<{ id: string; name: string; email: string }>;
   customers: Array<{ id: string; name: string; email: string }>;
 };
+
+export type DriverAvailabilityRecord = {
+  id: string;
+  name: string;
+  email: string;
+  availability: DriverAvailability;
+};
+
+export async function listDrivers(): Promise<DriverAvailabilityRecord[]> {
+  return prisma.user.findMany({
+    where: { role: "DRIVER" },
+    orderBy: { name: "asc" },
+    select: { id: true, name: true, email: true, availability: true },
+  });
+}
+
+export async function updateDriverAvailability(
+  driverId: string,
+  availability: DriverAvailability,
+): Promise<DriverAvailabilityRecord | null> {
+  const driver = await prisma.user.findFirst({
+    where: { id: driverId, role: "DRIVER" },
+    select: { id: true },
+  });
+  if (!driver) return null;
+
+  return prisma.user.update({
+    where: { id: driver.id },
+    data: { availability },
+    select: { id: true, name: true, email: true, availability: true },
+  });
+}
+
+export async function updateDriverAvailabilityByEmail(
+  email: string,
+  availability: DriverAvailability,
+): Promise<DriverAvailabilityRecord | null> {
+  const driver = await prisma.user.findFirst({
+    where: { email: { equals: email, mode: "insensitive" }, role: "DRIVER" },
+    select: { id: true },
+  });
+  if (!driver) return null;
+  return updateDriverAvailability(driver.id, availability);
+}
 
 export type CreateShipmentInput = {
   originBranchId: string;
@@ -117,6 +173,7 @@ export async function createShipment(input: CreateShipmentInput): Promise<Create
         destinationBranchId: destinationBranch.id,
         customerId: customer.id,
         driverId: driver?.id ?? null,
+        assignmentStatus: driver ? "PENDING" : "ACCEPTED",
         notes,
         status: "PENDING",
       },
@@ -172,7 +229,10 @@ export async function assignShipmentDriver(
 
     const updated = await transaction.shipment.update({
       where: { id: current.id },
-      data: { driverId: driver?.id ?? null },
+      data: {
+        driverId: driver?.id ?? null,
+        assignmentStatus: driver ? "PENDING" : "ACCEPTED",
+      },
       include: shipmentInclude,
     });
 
@@ -181,7 +241,56 @@ export async function assignShipmentDriver(
         shipmentId: updated.id,
         status: updated.status,
         actorEmail,
-        description: driver ? `Driver assigned: ${driver.name}` : "Driver unassigned",
+        description: driver
+          ? `Driver assigned: ${driver.name}; awaiting driver response`
+          : "Driver unassigned",
+      },
+    });
+
+    return { kind: "updated", shipment: toShipment(updated) };
+  });
+}
+
+export type AssignmentResponseResult =
+  | { kind: "updated"; shipment: Shipment }
+  | { kind: "not-found" }
+  | { kind: "forbidden" }
+  | { kind: "not-pending" };
+
+export async function respondToShipmentAssignment(
+  trackingCode: string,
+  assignmentStatus: Extract<AssignmentStatus, "ACCEPTED" | "REJECTED">,
+  actorEmail: string,
+): Promise<AssignmentResponseResult> {
+  return prisma.$transaction(async (transaction) => {
+    const current = await transaction.shipment.findFirst({
+      where: { trackingCode: { equals: trackingCode.trim(), mode: "insensitive" } },
+      include: { driver: { select: { email: true } } },
+    });
+
+    if (!current) return { kind: "not-found" };
+    if (current.driver?.email.toLowerCase() !== actorEmail.toLowerCase()) {
+      return { kind: "forbidden" };
+    }
+    if (current.assignmentStatus !== "PENDING") return { kind: "not-pending" };
+
+    const updated = await transaction.shipment.update({
+      where: { id: current.id },
+      data: {
+        assignmentStatus,
+        ...(assignmentStatus === "REJECTED" ? { driverId: null } : {}),
+      },
+      include: shipmentInclude,
+    });
+
+    await transaction.statusLog.create({
+      data: {
+        shipmentId: updated.id,
+        status: updated.status,
+        actorEmail,
+        description: assignmentStatus === "ACCEPTED"
+          ? "Driver accepted the shipment assignment"
+          : "Driver rejected the shipment assignment",
       },
     });
 
@@ -211,6 +320,9 @@ export async function addShipmentNote(
       actor.role === "DRIVER" &&
       current.driver?.email.toLowerCase() !== actor.email.toLowerCase()
     ) {
+      return { kind: "forbidden" };
+    }
+    if (actor.role === "DRIVER" && current.assignmentStatus !== "ACCEPTED") {
       return { kind: "forbidden" };
     }
 
@@ -418,6 +530,9 @@ export async function transitionShipmentStatus(
       actor.role === "DRIVER" &&
       current.driver?.email.toLowerCase() !== actor.email.toLowerCase()
     ) {
+      return { kind: "forbidden" };
+    }
+    if (actor.role === "DRIVER" && current.assignmentStatus !== "ACCEPTED") {
       return { kind: "forbidden" };
     }
 

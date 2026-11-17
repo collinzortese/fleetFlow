@@ -11,3 +11,22 @@ The skill is self-contained and includes [`references/schema.md`](skills/fleetfl
 - **Collins Ortese (Authentik)** — username `collins.ortese.driver`, email `collins.ortese.driver@fleetflow.local`, member of `FleetFlow Drivers`.
 - The matching FleetFlow Prisma user is configured with the `DRIVER` role and appears in the admin shipment driver selector.
 - The driver workspace is available at `/driver`; Collins can view assigned trips, update shipment status, and add audited delivery notes.
+
+## Driver availability configuration
+
+- Admins configure driver availability from `/admin/drivers` in the **Drivers group**.
+- Drivers can update their own availability from `/driver`; the setting is persisted on the FleetFlow Prisma user as `AVAILABLE` or `UNAVAILABLE`.
+- Availability changes use the authenticated `PATCH /api/drivers/availability` endpoint. Admin requests include `driverId`; driver requests update the signed-in driver only.
+
+## Driver assignment responses
+
+- New driver assignments start as `PENDING` and appear in the driver workspace for review.
+- Drivers accept or reject assignments from `/driver`; accepted assignments unlock status updates and delivery notes.
+- Rejected assignments are unassigned and recorded in the shipment audit log. The response endpoint is `PATCH /api/shipments/:trackingCode/assignment-response`.
+
+## Driver delivery proof
+
+- Accepted drivers can upload PDF, JPG, or PNG delivery proof from each trip in `/driver` (maximum 10 MB).
+- Proof metadata is stored with the shipment; local files are kept under the ignored `.fleetflow/proof-of-delivery/` directory.
+- Proof uploads validate both MIME type and file signature, and uploads/downloads require authentication and assignment ownership.
+- Uploads use `POST /api/shipments/:trackingCode/proof`; proof files are viewed through `GET /api/shipments/:trackingCode/proof/:proofId`.
