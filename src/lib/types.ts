@@ -11,6 +11,7 @@ export type Shipment = {
   origin: string;
   destination: string;
   status: ShipmentStatus;
+  driverId: string | null;
   driverName: string | null;
   customerName: string;
   updatedAt: string;
