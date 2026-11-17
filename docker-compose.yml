@@ -82,7 +82,6 @@ services:
 volumes:
   fleetflow-postgres:
   fleetflow-n8n:
-
 networks:
   fleetflow:
     name: fleetflow
